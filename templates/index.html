@@ -1,0 +1,1116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Per-process CSRF token. Same-origin policy keeps a foreign page from
+     reading this, so only scripts served from here can call the API. -->
+<meta name="revolver-token" content="{{ csrf_token }}">
+<title>REVOLVER</title>
+<style>
+/* Fonts are resolved from locally installed families only -- no CDN, works offline. */
+:root{
+  --bg:#08090d; --panel:#0d0f16; --panel2:#11141d;
+  --line:#1c2130; --line2:#28304a;
+  --cyan:#00e5ff; --magenta:#ff2d78; --amber:#ffb020;
+  --txt:#dfe7f0; --dim:#6b7690; --dimmer:#414c63;
+  --mono:'JetBrains Mono','IBM Plex Mono','DejaVu Sans Mono',ui-monospace,monospace;
+  --sans:'Inter','DejaVu Sans',system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--bg);color:var(--txt);font-family:var(--sans);
+  font-size:16.8px;padding:31px 26px 48px;position:relative;overflow-x:hidden;
+}
+/* CRT scanlines + vignette */
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+  background:repeating-linear-gradient(to bottom,
+    rgba(0,229,255,.028) 0px, rgba(0,229,255,.028) 1px,
+    transparent 1px, transparent 3px);
+  mix-blend-mode:screen;
+}
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:9998;
+  background:radial-gradient(ellipse at 50% 42%,
+    transparent 45%, rgba(0,0,0,.42) 88%, rgba(0,0,0,.72) 100%);
+}
+.wrap{max-width:1200px;margin:0 auto;position:relative;z-index:1}
+
+/* ---------- header ---------- */
+.top{display:flex;align-items:baseline;gap:17px;margin-bottom:24px;flex-wrap:wrap}
+.brand{
+  font-family:var(--mono);font-size:32.4px;font-weight:700;letter-spacing:.38em;
+  color:var(--cyan);text-shadow:0 0 18px rgba(0,229,255,.55),0 0 44px rgba(0,229,255,.22);
+  margin:0;line-height:1;
+}
+.brand-sub{
+  font-family:var(--mono);font-size:11.4px;letter-spacing:.34em;color:var(--dimmer);
+  text-transform:uppercase;
+}
+.acct{
+  margin-left:auto;font-family:var(--mono);font-size:12.6px;letter-spacing:.12em;
+  color:var(--dim);border:1px solid var(--line2);border-radius:2px;padding:6px 13px;
+  background:rgba(0,229,255,.03);
+}
+.acct b{color:var(--cyan);font-weight:500}
+
+.banner{
+  display:none;border:1px solid var(--magenta);background:rgba(255,45,120,.09);
+  color:#ffb9d0;padding:16px 19px;margin-bottom:22px;border-radius:3px;
+  font-family:var(--mono);font-size:14.4px;letter-spacing:.04em;line-height:1.6;
+  box-shadow:0 0 26px rgba(255,45,120,.16) inset;
+}
+
+/* ---------- main panel ---------- */
+.deck{
+  display:grid;grid-template-columns:385px 1fr;gap:31px;align-items:center;
+  background:linear-gradient(160deg,var(--panel) 0%,var(--panel2) 100%);
+  border:1px solid var(--line);border-radius:4px;padding:31px 34px;margin-bottom:19px;
+  position:relative;overflow:hidden;
+}
+.deck::before{ /* corner tick */
+  content:'';position:absolute;top:0;left:0;width:53px;height:53px;
+  border-top:2px solid var(--cyan);border-left:2px solid var(--cyan);opacity:.5;
+}
+.deck::after{
+  content:'';position:absolute;bottom:0;right:0;width:53px;height:53px;
+  border-bottom:2px solid var(--cyan);border-right:2px solid var(--cyan);opacity:.5;
+}
+
+/* ---------- revolver + ring ---------- */
+/* The dial is scaled by its CONTAINER (230 -> 303px). Ring, ticks and cylinder
+   keep their user-unit radii, so the artwork itself is untouched; the viewBox
+   was widened (244 -> 268 units, still centred on 100,100) purely to make room
+   for the tick labels, and the gunwrap grew by the same ratio. Net effect: the
+   ring renders at the same on-screen radius either way, and the labels gain
+   real clearance instead of clipping the ring. */
+.gunwrap{position:relative;width:357px;height:357px;justify-self:center}
+.gunwrap svg{position:absolute;inset:0;width:100%;height:100%}
+/* Two layers, deliberately separate, so they stop overwriting each other:
+   #spinner carries the always-on idle rotation as a CSS animation, and
+   #cylinder carries the 60-degree chamber snap as a JS transform. One element
+   cannot hold both -- the JS transform assignment kills the animation. */
+#spinner{
+  transform-box:fill-box;transform-origin:center;
+  animation:idlespin 54s linear infinite;
+}
+@keyframes idlespin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+#cylinder{
+  transform-box:fill-box;transform-origin:center;
+  transition:transform 900ms cubic-bezier(.16,1.02,.30,1);
+}
+.ringtrack{stroke:#151a27;stroke-width:5;fill:none}
+.ringfill{
+  stroke:var(--cyan);stroke-width:5;fill:none;stroke-linecap:round;
+  filter:drop-shadow(0 0 7px rgba(0,229,255,.85));
+  transition:stroke-dashoffset 1s linear;
+}
+.ringfill.idle{stroke:#2a3346;filter:none}
+.ringfill.snap{transition:none}
+.ringlabel{
+  position:absolute;left:0;right:0;bottom:-5px;text-align:center;
+  font-family:var(--mono);font-size:12px;letter-spacing:.2em;color:var(--dim);
+  text-transform:uppercase;
+}
+.ringlabel b{color:var(--cyan);font-weight:500;letter-spacing:.1em}
+
+/* ---------- hero readouts ---------- */
+.readouts{min-width:0}
+.hero{
+  font-family:var(--mono);font-size:64.8px;font-weight:700;letter-spacing:.1em;
+  line-height:1;margin-bottom:5px;transition:color .3s,text-shadow .3s;
+}
+.hero.on{color:var(--cyan);text-shadow:0 0 26px rgba(0,229,255,.6),0 0 66px rgba(0,229,255,.24)}
+.hero.off{color:var(--magenta);text-shadow:0 0 26px rgba(255,45,120,.6),0 0 66px rgba(255,45,120,.24)}
+.hero.busy{color:var(--amber);text-shadow:0 0 26px rgba(255,176,32,.55);animation:pulse 1.1s infinite}
+@keyframes pulse{50%{opacity:.45}}
+.substate{
+  font-family:var(--mono);font-size:12.6px;letter-spacing:.26em;color:var(--dim);
+  text-transform:uppercase;margin-bottom:26px;
+}
+
+.ipblock{margin-bottom:24px}
+.lbl{
+  font-family:var(--mono);font-size:11.4px;letter-spacing:.3em;color:var(--dimmer);
+  text-transform:uppercase;margin-bottom:7px;
+}
+.ip{
+  font-family:var(--mono);font-size:39.6px;font-weight:500;letter-spacing:.04em;
+  color:var(--txt);position:relative;display:inline-block;
+}
+.ip.glitch{animation:glitch .55s steps(2,end)}
+@keyframes glitch{
+  0%{transform:translate(0);text-shadow:none}
+  15%{transform:translate(-3px,1px);text-shadow:2px 0 var(--magenta),-2px 0 var(--cyan)}
+  30%{transform:translate(3px,-1px);text-shadow:-2px 0 var(--magenta),2px 0 var(--cyan)}
+  45%{transform:translate(-2px,-1px);text-shadow:2px 0 var(--cyan),-2px 0 var(--magenta)}
+  60%{transform:translate(2px,1px);text-shadow:-1px 0 var(--magenta),1px 0 var(--cyan)}
+  80%{transform:translate(-1px,0);text-shadow:1px 0 var(--cyan)}
+  100%{transform:translate(0);text-shadow:none}
+}
+.ipmeta{font-family:var(--mono);font-size:12px;color:var(--dimmer);letter-spacing:.14em;margin-top:6px}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:22px}
+/* was nowrap+ellipsis, which silently ate the country code chip. Wrap
+   instead: a readout may take two lines, but it is never cut. */
+.stat .v{font-family:var(--mono);font-size:19.2px;color:var(--txt);letter-spacing:.05em;
+         white-space:normal;overflow-wrap:anywhere;line-height:1.25}
+.stat .v.cy{color:var(--cyan)}
+.stat .v.am{color:var(--amber)}
+.stat .v.mg{color:var(--magenta)}
+.stat .v .cc{font-size:12px;color:var(--dimmer);letter-spacing:.16em;vertical-align:2px;margin-left:2px}
+/* long country names ("United States" + code chip) overflowed the 4-up stat
+   column and truncated the chip away; a touch smaller keeps them whole */
+.stat .v.co{font-size:16.8px;letter-spacing:.02em}
+
+/* ---------- controls ---------- */
+.controls{
+  background:var(--panel);border:1px solid var(--line);border-radius:4px;
+  padding:20px 24px;margin-bottom:19px;display:flex;gap:13px;align-items:center;flex-wrap:wrap;
+}
+.ivwrap{display:flex;align-items:center;gap:11px;margin-right:6px}
+.ivwrap span{font-family:var(--mono);font-size:11.4px;letter-spacing:.24em;
+             color:var(--dimmer);text-transform:uppercase}
+input[type=number]{
+  background:#05060a;border:1px solid var(--line2);color:var(--cyan);
+  font-family:var(--mono);font-size:18px;padding:11px 10px;width:84px;border-radius:2px;
+  text-align:center;letter-spacing:.05em;
+}
+input[type=number]:focus{outline:none;border-color:var(--cyan);
+  box-shadow:0 0 14px rgba(0,229,255,.3)}
+button{
+  font-family:var(--mono);font-size:13.2px;font-weight:700;letter-spacing:.19em;
+  text-transform:uppercase;padding:14px 23px;border-radius:2px;cursor:pointer;
+  background:transparent;color:var(--cyan);border:1px solid var(--cyan);
+  transition:background .18s,box-shadow .18s,color .18s;
+}
+button:hover:not(:disabled){
+  background:rgba(0,229,255,.13);box-shadow:0 0 22px rgba(0,229,255,.42),
+             inset 0 0 18px rgba(0,229,255,.1);
+}
+button:disabled{opacity:.28;cursor:not-allowed}
+button.mg{color:var(--magenta);border-color:var(--magenta)}
+button.mg:hover:not(:disabled){background:rgba(255,45,120,.13);
+  box-shadow:0 0 22px rgba(255,45,120,.42),inset 0 0 18px rgba(255,45,120,.1)}
+button.gh{color:var(--dim);border-color:var(--line2)}
+button.gh:hover:not(:disabled){background:rgba(255,255,255,.05);
+  box-shadow:0 0 16px rgba(255,255,255,.09);color:var(--txt)}
+button.live{background:rgba(0,229,255,.16);box-shadow:0 0 20px rgba(0,229,255,.34)}
+
+/* ---------- log ---------- */
+.logpanel{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:20px 24px}
+.loghead{display:flex;align-items:center;gap:11px;margin-bottom:13px}
+.loghead .lbl{margin:0}
+.blink{width:7px;height:7px;background:var(--cyan);border-radius:50%;
+       box-shadow:0 0 9px var(--cyan);animation:bl 1.4s infinite}
+@keyframes bl{50%{opacity:.16}}
+.feed{
+  font-family:var(--mono);font-size:13.8px;line-height:1.85;max-height:312px;
+  overflow-y:auto;padding-right:7px;
+}
+.feed div{display:flex;gap:14px;padding:1px 0}
+.feed .t{color:var(--dimmer);flex:none}
+.feed .m{color:#93a2ba;word-break:break-word}
+.feed .m.ok{color:var(--cyan);text-shadow:0 0 11px rgba(0,229,255,.4)}
+.feed .m.err{color:var(--magenta);text-shadow:0 0 11px rgba(255,45,120,.4)}
+.feed .m.warn{color:var(--amber)}
+.feed::-webkit-scrollbar{width:5px}
+.feed::-webkit-scrollbar-thumb{background:var(--line2);border-radius:3px}
+.feed::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- ring ticks ---------- */
+/* Base = the idle graduated scale. #243049 was near-invisible on the #0d0f16
+   panel, which is why the dial read as blank when nothing was running. */
+.tick{stroke:#4a5b7d;stroke-width:2;stroke-linecap:round;
+      transition:stroke .4s,opacity .4s}
+.tick.major{stroke-width:3.2}
+/* passed ticks stay legible -- the scale should still read as a scale,
+   just clearly spent next to the glowing upcoming ones */
+.tick.past{stroke:#2f3c57;opacity:.9}
+.tick.up{stroke:var(--cyan);opacity:.95;filter:drop-shadow(0 0 4px rgba(0,229,255,.8))}
+/* paint-order puts a dark outline under each glyph: without it a lit cyan
+   label sitting over the cyan ring glow washes out to nothing. */
+/* ---------- outer clock bezel ---------- */
+/* Deliberately faint: this is a machined scale for the dots to read against,
+   not another thing competing for attention. */
+.mmtick{stroke:#28334a;stroke-width:.9;stroke-linecap:round}
+.mmtick.m5{stroke:#46567a;stroke-width:1.6}
+/* seconds: cyan, one turn per 60s */
+.secdot{fill:var(--cyan);filter:drop-shadow(0 0 3.5px rgba(0,229,255,.95))}
+/* milliseconds: magenta, smaller and dimmer, one turn per 1000ms, on its own
+   radius so it can never sit under the seconds dot */
+.msdot{fill:var(--magenta);opacity:.7;filter:drop-shadow(0 0 2.5px rgba(255,45,120,.8))}
+
+.ticklabel{font-family:var(--mono);font-size:8.5px;letter-spacing:.04em;
+           fill:#7b8aa8;text-anchor:middle;
+           paint-order:stroke fill;stroke:#08090d;stroke-width:2.4px;
+           stroke-linejoin:round}
+.ticklabel.up{fill:var(--cyan)}
+
+/* ---------- toggles ---------- */
+.section{margin:26px 0 13px;display:flex;align-items:center;gap:13px}
+.section h2{font-family:var(--mono);font-size:13.2px;font-weight:700;letter-spacing:.3em;
+            color:var(--dim);text-transform:uppercase;margin:0}
+.section .rule{flex:1;height:1px;background:linear-gradient(90deg,var(--line2),transparent)}
+/* 232 -> 290: the card min-width grows MORE than 1.2x on purpose. Titles
+   like "PORT-SCAN DETECT + DROP AT HOST" set the floor, and it is better to
+   wrap to fewer columns than to clip a card. */
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:13px}
+.tog{
+  background:var(--panel);border:1px solid var(--line);border-radius:3px;
+  padding:16px 17px;display:flex;flex-direction:column;gap:11px;
+  transition:border-color .2s,box-shadow .2s;position:relative;
+}
+.tog.on{border-color:rgba(0,229,255,.55);box-shadow:0 0 18px rgba(0,229,255,.13) inset}
+.tog.sudo{border-left:2px solid var(--amber)}
+.tog.unknown{border-left:2px solid var(--dimmer)}
+.tog-top{display:flex;align-items:center;gap:12px}
+.tog-name{font-family:var(--mono);font-size:12.6px;font-weight:700;letter-spacing:.14em;
+          color:var(--txt);text-transform:uppercase;line-height:1.3;flex:1}
+.tog.on .tog-name{color:var(--cyan)}
+.sw{
+  width:53px;height:25px;border-radius:2px;border:1px solid var(--line2);
+  background:#05060a;position:relative;cursor:pointer;flex:none;transition:.2s;
+}
+.sw::after{
+  content:'';position:absolute;top:2px;left:2px;width:20px;height:19px;border-radius:1px;
+  background:#3a445c;transition:.22s;
+}
+.sw.on{border-color:var(--cyan);background:rgba(0,229,255,.16);
+       box-shadow:0 0 15px rgba(0,229,255,.4)}
+.sw.on::after{left:29px;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+.sw.unk{border-color:var(--dimmer)}
+.sw.unk::after{left:16px;background:var(--dimmer);width:17px}
+.tog-desc{font-size:12.6px;color:var(--dim);line-height:1.5}
+.tog-state{font-family:var(--mono);font-size:10.8px;letter-spacing:.16em;text-transform:uppercase}
+.tog-state.ok{color:var(--cyan)} .tog-state.off{color:var(--dimmer)}
+.tog-state.unk{color:var(--amber)} .tog-state.bad{color:var(--magenta)}
+.cmdbox{
+  display:none;margin-top:4px;background:#05060a;border:1px solid var(--amber);
+  border-radius:2px;padding:11px 12px;font-family:var(--mono);font-size:11.4px;
+  color:#ffd79a;word-break:break-all;line-height:1.6;user-select:all;cursor:text;
+}
+.cmdbox.show{display:block}
+.cmdbox .h{color:var(--amber);letter-spacing:.14em;display:block;margin-bottom:6px;
+           text-transform:uppercase;font-size:10.2px}
+
+/* ---------- monitor tables ---------- */
+.mongrid{display:grid;grid-template-columns:1fr 1fr;gap:17px}
+.mon{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:17px 19px;min-width:0}
+.mon h3{font-family:var(--mono);font-size:11.4px;letter-spacing:.24em;color:var(--dimmer);
+        text-transform:uppercase;margin:0 0 12px;font-weight:400}
+/* mono rows are wider at 12.6px, so the table scrolls BOTH ways inside its
+   own box; the page itself must never scroll sideways. */
+.rows{font-family:var(--mono);font-size:12.6px;max-height:228px;
+      overflow-y:auto;overflow-x:auto;line-height:1.85}
+.rows .r{display:flex;gap:11px;white-space:nowrap}
+.rows .r span:first-child{color:var(--dim);min-width:89px;flex:none}
+.rows .r.flag span:first-child{color:var(--magenta)}
+.rows .r .p{color:var(--dimmer);overflow:hidden;text-overflow:ellipsis}
+.rows::-webkit-scrollbar{width:5px;height:5px}
+.rows::-webkit-scrollbar-thumb{background:var(--line2);border-radius:3px}
+.empty{color:var(--dimmer);font-family:var(--mono);font-size:12.6px}
+.warnnote{
+  font-size:12.6px;color:var(--amber);background:rgba(255,176,32,.07);
+  border:1px solid rgba(255,176,32,.3);border-radius:3px;padding:12px 14px;
+  margin-top:13px;line-height:1.6;
+}
+.warnnote b{color:#ffd79a}
+.toolstrip{
+  display:flex;flex-wrap:wrap;gap:8px;margin-top:13px;font-family:var(--mono);
+  font-size:10.8px;letter-spacing:.14em;text-transform:uppercase;
+}
+.toolstrip .tl{
+  border:1px solid var(--line2);border-radius:2px;padding:5px 10px;color:var(--dim);
+  background:rgba(0,229,255,.03);
+}
+.toolstrip .tl.no{border-color:var(--magenta);color:var(--magenta);
+  background:rgba(255,45,120,.06)}
+.toolstrip .tl b{color:var(--cyan);font-weight:500}
+.toolstrip .hd{color:var(--dimmer);padding:5px 2px}
+@media(max-width:912px){.mongrid{grid-template-columns:1fr}}
+@media(max-width:912px){
+  .deck{grid-template-columns:1fr}
+  .hero{font-size:48px}
+  .ip{font-size:31.2px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div>
+      <h1 class="brand">REVOLVER</h1>
+      <div class="brand-sub">Proton&nbsp;VPN&nbsp;&middot;&nbsp;exit&nbsp;rotation&nbsp;control&nbsp;&middot;&nbsp;127.0.0.1</div>
+    </div>
+    <div class="acct" id="acct">&mdash;</div>
+  </div>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="deck">
+    <!-- revolver cylinder + countdown ring -->
+    <div class="gunwrap">
+      <!-- viewBox is padded so the tick labels sit outside the r=94 ring;
+           inside it they were drawn under the r=78 cylinder and invisible. -->
+      <svg viewBox="-58 -58 316 316" aria-label="revolver cylinder">
+        <defs>
+          <radialGradient id="body" cx="38%" cy="30%" r="78%">
+            <stop offset="0%"  stop-color="#4a5468"/>
+            <stop offset="42%" stop-color="#2b3242"/>
+            <stop offset="78%" stop-color="#171c27"/>
+            <stop offset="100%" stop-color="#0c1018"/>
+          </radialGradient>
+          <radialGradient id="bore" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#000"/>
+            <stop offset="72%" stop-color="#05070c"/>
+            <stop offset="100%" stop-color="#121722"/>
+          </radialGradient>
+          <linearGradient id="fluteA" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#3d4658" stop-opacity=".85"/>
+            <stop offset="100%" stop-color="#141926" stop-opacity=".2"/>
+          </linearGradient>
+          <radialGradient id="hub" cx="40%" cy="34%" r="70%">
+            <stop offset="0%" stop-color="#5d6981"/>
+            <stop offset="60%" stop-color="#2a3141"/>
+            <stop offset="100%" stop-color="#10141d"/>
+          </radialGradient>
+          <filter id="rimglow" x="-55%" y="-55%" width="210%" height="210%">
+            <feGaussianBlur stdDeviation="3.6" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+
+        <!-- FIXED dial layer: never rotates, so it reads as a clock face.
+             Drawn after the ring so the graduations sit on top of it rather
+             than under the 5px ring stroke. -->
+        <circle class="ringtrack" cx="100" cy="100" r="94"/>
+        <circle id="ring" class="ringfill" cx="100" cy="100" r="94"
+                transform="rotate(-90 100 100)"/>
+        <g id="ticks"></g>
+        <g id="ticklabels"></g>
+
+        <!-- OUTER BEZEL, also fixed: 60 mm graduations (one per second) and the
+             two real-clock dots that sweep them. Kept outside the r=116 time
+             labels so the three jobs never share radius:
+               cylinder (spins, r<=78) | countdown ring (depletes, r=94)
+               | time labels (r=116) | clock bezel (r>=127). -->
+        <g id="mmticks"></g>
+        <g id="clockdots">
+          <circle id="msdot"  class="msdot"  cx="100" cy="100" r="1.5"/>
+          <circle id="secdot" class="secdot" cx="100" cy="100" r="2.4"/>
+        </g>
+
+        <!-- SPINNING layer: idle rotation (CSS) wrapping the chamber snap (JS) -->
+        <g id="spinner">
+        <g id="cylinder">
+          <circle cx="100" cy="100" r="78" fill="url(#body)"
+                  stroke="#59657d" stroke-width="1.1"/>
+          <circle cx="100" cy="100" r="78" fill="none" stroke="#00e5ff"
+                  stroke-width="1.6" opacity=".82" filter="url(#rimglow)"/>
+          <circle cx="100" cy="100" r="68" fill="none" stroke="#0d121b" stroke-width="1.2"/>
+          <!-- 6 flutes between chambers -->
+          <g opacity=".55">
+            <path d="M100 30 A70 70 0 0 1 100 30" fill="none"/>
+            <g id="flutes"></g>
+          </g>
+          <!-- 6 chambers -->
+          <g id="chambers"></g>
+          <!-- center hub -->
+          <circle cx="100" cy="100" r="17" fill="url(#hub)" stroke="#66738d" stroke-width="1"/>
+          <circle cx="100" cy="100" r="7.5" fill="#05070c" stroke="#39455c" stroke-width="1"/>
+          <circle cx="100" cy="100" r="2.6" fill="#00e5ff" opacity=".7"/>
+        </g>
+        </g>
+        <!-- index notch: OUTSIDE the spinner, so it stays at 12 o'clock and the
+             chambers turn past it, which is how a revolver index reads. -->
+        <rect x="97.6" y="20.5" width="4.8" height="9" rx="1.4"
+              fill="#00e5ff" opacity=".9" filter="url(#rimglow)"/>
+      </svg>
+      <div class="ringlabel" id="ringlabel">STANDBY</div>
+    </div>
+
+    <!-- readouts -->
+    <div class="readouts">
+      <div class="hero off" id="hero">&mdash;</div>
+      <div class="substate" id="substate">initialising</div>
+
+      <div class="ipblock">
+        <div class="lbl">Exit IP</div>
+        <div class="ip" id="ip">&mdash;</div>
+        <div class="ipmeta" id="ipmeta"></div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="lbl">Exit node</div><div class="v cy" id="server">&mdash;</div></div>
+        <div class="stat"><div class="lbl">Country</div><div class="v co" id="country">&mdash;</div></div>
+        <div class="stat"><div class="lbl">Kill switch</div><div class="v" id="ks">&mdash;</div></div>
+        <div class="stat"><div class="lbl">Chambers fired</div><div class="v" id="count">0</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="ivwrap">
+      <span>Cycle</span>
+      <input type="number" id="iv" min="1" max="1440" value="{{ interval }}">
+      <span>min</span>
+    </div>
+    <button id="toggle" class="gh">Start rotation</button>
+    <button id="rotate">Rotate now</button>
+    <button id="checkip" class="gh">Check IP</button>
+    <button id="disc" class="mg">Disconnect</button>
+  </div>
+
+  <div class="section"><h2>Defence toggles</h2><div class="rule"></div></div>
+  <div class="tgrid" id="tgrid"></div>
+  <div id="capnote"></div>
+  <div class="toolstrip" id="toolstrip"></div>
+
+  <div class="section"><h2>Connection monitor</h2><div class="rule"></div></div>
+  <div class="mongrid">
+    <div class="mon">
+      <h3>Listening ports</h3>
+      <div class="rows" id="listening"><span class="empty">scanning…</span></div>
+    </div>
+    <div class="mon">
+      <h3>Active connections</h3>
+      <div class="rows" id="conns"><span class="empty">scanning…</span></div>
+    </div>
+  </div>
+
+  <div class="mon" style="margin-top:17px">
+    <h3>Port-scan hits &middot; detected and dropped at THIS host</h3>
+    <div class="rows" id="scanrows" style="max-height:180px">
+      <span class="empty">&hellip;</span>
+    </div>
+    <div id="scannote"></div>
+  </div>
+
+  <div class="section"><h2>Alerts</h2><div class="rule"></div></div>
+  <div class="mon" style="margin-bottom:19px">
+    <div class="rows" id="alerts" style="max-height:180px">
+      <span class="empty">no alerts</span>
+    </div>
+  </div>
+
+  <div class="logpanel">
+    <div class="loghead"><span class="blink"></span><div class="lbl">Event feed</div></div>
+    <div class="feed" id="feed"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+/* ---- build the 6 chambers + flutes ---- */
+(function buildCylinder(){
+  const ch = $('chambers'), fl = $('flutes');
+  let c = '', f = '';
+  for (let i = 0; i < 6; i++){
+    const a = (i * 60 - 90) * Math.PI / 180;
+    const x = 100 + 44 * Math.cos(a), y = 100 + 44 * Math.sin(a);
+    c += `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="16.5" fill="url(#bore)"
+            stroke="#5a6580" stroke-width="1"/>`;
+    c += `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="16.5" fill="none"
+            stroke="#616e88" stroke-width="1.5"/>`;
+    c += `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="13" fill="none"
+            stroke="#000" stroke-width="2.4" opacity=".55"/>`;
+    const fa = (i * 60 - 60) * Math.PI / 180;
+    const fx = 100 + 66 * Math.cos(fa), fy = 100 + 66 * Math.sin(fa);
+    f += `<circle cx="${fx.toFixed(2)}" cy="${fy.toFixed(2)}" r="4.6"
+            fill="url(#fluteA)" stroke="#39435a" stroke-width=".8"/>`;
+  }
+  ch.innerHTML = c; fl.innerHTML = f;
+})();
+
+/* ---- countdown ring geometry + increment ticks ---- */
+const R = 94, CIRC = 2 * Math.PI * R;
+$('ring').style.strokeDasharray = CIRC;
+$('ring').style.strokeDashoffset = 0;
+
+const NTICKS = 24;              /* one tick per 1/24 of the cycle */
+(function buildTicks(){
+  let t = '', l = '';
+  for (let i = 0; i < NTICKS; i++){
+    const frac = i / NTICKS;
+    const a = (frac * 360 - 90) * Math.PI / 180;
+    const major = i % 6 === 0;                  /* quarters get a long tick */
+    /* the ring stroke is 5 wide at r=94, i.e. it covers 91.5-96.5; ticks stop
+       at 90 so the graduations stay clear of it instead of being painted over */
+    const r1 = major ? 80.5 : 85, r2 = 90;
+    const x1 = 100 + r1 * Math.cos(a), y1 = 100 + r1 * Math.sin(a);
+    const x2 = 100 + r2 * Math.cos(a), y2 = 100 + r2 * Math.sin(a);
+    t += `<line class="tick${major ? ' major' : ''}" data-i="${i}"
+            x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}"
+            x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}"/>`;
+    /* Label the top/right/left majors. The bottom one is skipped: it would
+       collide with the NEXT readout sitting under the dial. */
+    if (major && i !== NTICKS / 2){
+      const lr = 116;   /* inner edge of the widest label clears the r=96.5 ring */
+      const lx = 100 + lr * Math.cos(a), ly = 100 + lr * Math.sin(a) + 2.8;
+      l += `<text class="ticklabel" data-i="${i}" x="${lx.toFixed(2)}"
+              y="${ly.toFixed(2)}"></text>`;
+    }
+  }
+  $('ticks').innerHTML = t;
+  $('ticklabels').innerHTML = l;
+})();
+/* ---- outer clock bezel: 60 mm graduations, one per second ---- *
+ * Geometry is fixed and built once. Radii are chosen to clear the r=116 time
+ * labels (whose widest, "22m30", reaches r~129 at the 3 and 9 o'clock marks). */
+const MM_R_OUT = 135, MM_R_IN = 130.5, MM_R_IN5 = 127.5;
+const SEC_R = 140, MS_R = 146;      /* separate radii: the dots never overlap */
+(function buildMM(){
+  let t = '';
+  for (let i = 0; i < 60; i++){
+    const a = (i / 60 * 360 - 90) * Math.PI / 180;
+    const five = i % 5 === 0;
+    const r1 = five ? MM_R_IN5 : MM_R_IN;
+    t += `<line class="mmtick${five ? ' m5' : ''}"
+            x1="${(100 + r1 * Math.cos(a)).toFixed(2)}" y1="${(100 + r1 * Math.sin(a)).toFixed(2)}"
+            x2="${(100 + MM_R_OUT * Math.cos(a)).toFixed(2)}" y2="${(100 + MM_R_OUT * Math.sin(a)).toFixed(2)}"/>`;
+  }
+  $('mmticks').innerHTML = t;
+})();
+
+/* ---- real-clock dots ----
+ * Driven from Date.now(), not a CSS spin, so they genuinely read the wall
+ * clock: Unix epoch minutes align to UTC minute boundaries, so
+ * (now % 60000)/60000 IS the current second-hand position. Runs on its own rAF
+ * loop, independent of the status poll, the VPN state and the rotation timer --
+ * exactly like the idle cylinder spin. */
+function placeDot(el, radius, frac){
+  const a = (frac * 360 - 90) * Math.PI / 180;
+  el.setAttribute('cx', (100 + radius * Math.cos(a)).toFixed(3));
+  el.setAttribute('cy', (100 + radius * Math.sin(a)).toFixed(3));
+}
+const SECDOT = $('secdot'), MSDOT = $('msdot');
+let clockFrames = 0;
+(function clockLoop(){
+  const now = Date.now();
+  const secFrac = (now % 60000) / 60000, msFrac = (now % 1000) / 1000;
+  placeDot(SECDOT, SEC_R, secFrac);
+  placeDot(MSDOT,  MS_R,  msFrac);
+  clockFrames++;
+  /* the timestamp this frame was drawn from, so the dial can be checked
+     against the clock in devtools: __clock.secDeg must equal the angle the
+     cyan dot is actually rendered at */
+  window.__clock = {t: now, secDeg: secFrac * 360, msDeg: msFrac * 360,
+                    frames: clockFrames};
+  requestAnimationFrame(clockLoop);
+})();
+
+const TICKS = Array.from(document.querySelectorAll('.tick'));
+const TICKLABELS = Array.from(document.querySelectorAll('.ticklabel'));
+
+/* Quarter marks of a 30m cycle are 7m30 and 22m30; rounding those to "8m" and
+   "23m" reads as arbitrary noise on a clock face, so keep the seconds. */
+function fmtTick(secs){
+  secs = Math.round(secs);
+  if (secs < 60) return secs + 's';
+  const m = Math.floor(secs / 60), r = secs % 60;
+  return r ? m + 'm' + String(r).padStart(2, '0') : m + 'm';
+}
+
+/* Ticks ahead of the playhead glow, passed ticks dim. Major ticks are labelled
+   with the seconds remaining at that point in the cycle.
+   Idle/disconnected still draws the full graduated dial as a STATIC scale of
+   the cycle divisions -- a clock face with no hand, never a blank ring. */
+function paintTicks(remain, total, running){
+  if (!running || remain === null || remain === undefined || !total){
+    TICKS.forEach(t => { t.classList.remove('up','past'); });
+    TICKLABELS.forEach(t => {
+      t.classList.remove('up');
+      t.textContent = total ? fmtTick(total * (+t.dataset.i / NTICKS)) : '';
+    });
+    return;
+  }
+  const frac = Math.max(0, Math.min(1, remain / total));
+  const live = frac * NTICKS;          /* ticks still to burn */
+  TICKS.forEach(t => {
+    const i = +t.dataset.i;
+    const upcoming = i < live;
+    t.classList.toggle('up', upcoming);
+    t.classList.toggle('past', !upcoming);
+  });
+  TICKLABELS.forEach(t => {
+    const i = +t.dataset.i;
+    t.textContent = fmtTick(total * (i / NTICKS));
+    t.classList.toggle('up', i < live);
+  });
+}
+
+/* Graduate the dial immediately from the server-rendered interval, so it is a
+   readable scale on first paint rather than after the first poll lands. */
+paintTicks(null, (parseInt($('iv').value, 10) || 30) * 60, false);
+
+/* ---- state carried between polls ---- */
+let busy = false, rotating = false;
+let lastCount = null, lastIp = null, angle = 0, lastRemain = null;
+
+const COUNTRIES = {
+  AR:'Argentina',AT:'Austria',AU:'Australia',BE:'Belgium',BG:'Bulgaria',BR:'Brazil',
+  CA:'Canada',CH:'Switzerland',CL:'Chile',CZ:'Czechia',DE:'Germany',DK:'Denmark',
+  EE:'Estonia',ES:'Spain',FI:'Finland',FR:'France',GR:'Greece',HK:'Hong Kong',
+  HR:'Croatia',HU:'Hungary',IE:'Ireland',IL:'Israel',IN:'India',IS:'Iceland',
+  IT:'Italy',JP:'Japan',KR:'South Korea',LT:'Lithuania',LU:'Luxembourg',LV:'Latvia',
+  MX:'Mexico',MY:'Malaysia',NL:'Netherlands',NO:'Norway',NZ:'New Zealand',
+  PL:'Poland',PT:'Portugal',RO:'Romania',RS:'Serbia',SE:'Sweden',SG:'Singapore',
+  SK:'Slovakia',TR:'Turkey',TW:'Taiwan',UA:'Ukraine',UK:'United Kingdom',
+  US:'United States',ZA:'South Africa'
+};
+/* The status payload has no country field -- derive it from the exit-node
+   prefix ("NL-FREE#122" -> NL). Purely presentational, no backend change. */
+function countryOf(server){
+  if (!server) return null;
+  const m = /^([A-Z]{2})/.exec(server);
+  if (!m) return null;
+  return {name: COUNTRIES[m[1]] || m[1], code: m[1]};
+}
+
+function fmt(s){
+  if (s === null || s === undefined) return null;
+  const m = Math.floor(s / 60), r = s % 60;
+  return m > 0 ? m + 'm ' + String(r).padStart(2,'0') + 's' : r + 's';
+}
+const esc = t => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+const TOKEN = (document.querySelector('meta[name="revolver-token"]') || {}).content || '';
+
+async function post(path, body){
+  try{
+    const r = await fetch(path, {method:'POST',
+      headers:{'Content-Type':'application/json', 'X-Revolver-Token': TOKEN},
+      body:JSON.stringify(body||{})});
+    return await r.json();
+  }catch(e){ return {ok:false}; }
+}
+
+function render(s){
+  LASTSTATUS = s;
+  busy = !!s.busy; rotating = !!s.rotating;
+
+  /* banner */
+  const b = $('banner');
+  if (s.error === 'not-logged-in'){
+    b.style.display = 'block';
+    b.textContent = 'NO SESSION — open the Proton VPN app and sign in. This panel '
+      + 'reuses your existing session and never handles your password.';
+  } else if (s.error){
+    b.style.display = 'block';
+    b.textContent = 'API FAULT — ' + s.error;
+  } else b.style.display = 'none';
+
+  /* hero */
+  const hero = $('hero');
+  if (s.busy){ hero.className = 'hero busy'; hero.textContent = 'CYCLING'; }
+  else if (s.connected){ hero.className = 'hero on'; hero.textContent = 'PROTECTED'; }
+  else { hero.className = 'hero off'; hero.textContent = 'EXPOSED'; }
+  $('substate').textContent =
+    (s.state && s.state !== 'Unknown' ? s.state : 'unknown') +
+    (s.rotating ? ' · auto-rotate armed' : ' · manual');
+
+  $('acct').innerHTML = s.account
+    ? 'SESSION <b>' + esc(s.account) + '</b>' + (s.tier === 0 ? ' · FREE' : '')
+    : 'NO SESSION';
+
+  /* exit IP with glitch on change */
+  const ipEl = $('ip');
+  const ip = s.public_ip || null;
+  ipEl.textContent = ip || '—';
+  if (ip && lastIp && ip !== lastIp){
+    ipEl.classList.remove('glitch');
+    void ipEl.offsetWidth;          /* restart the animation */
+    ipEl.classList.add('glitch');
+  }
+  if (ip) lastIp = ip;
+  $('ipmeta').textContent = s.public_ip_checked_at
+    ? 'verified ' + s.public_ip_checked_at : '';
+
+  $('server').textContent = s.server || '—';
+  const co = countryOf(s.server);
+  $('country').innerHTML = co
+    ? esc(co.name) + ' <span class="cc">' + esc(co.code) + '</span>'
+    : '—';
+  const ks = $('ks');
+  ks.textContent = s.killswitch || '—';
+  ks.className = 'v ' + (s.killswitch === 'Off' ? 'mg' : 'cy');
+  $('count').textContent = s.rotation_count != null ? s.rotation_count : 0;
+
+  /* chamber click: advance 60 deg per completed rotation */
+  if (s.rotation_count != null){
+    if (lastCount === null){
+      /* First paint: seat the cylinder at the angle the count implies, with no
+         tween, so chamber position survives a reload instead of snapping back. */
+      lastCount = s.rotation_count;
+      angle = 60 * (s.rotation_count % 6);
+      const cyl = $('cylinder');
+      cyl.style.transition = 'none';
+      cyl.style.transform = 'rotate(' + angle + 'deg)';
+      requestAnimationFrame(() => requestAnimationFrame(
+        () => { cyl.style.transition = ''; }));
+    }
+    else if (s.rotation_count > lastCount){
+      angle += 60 * (s.rotation_count - lastCount);
+      lastCount = s.rotation_count;
+      $('cylinder').style.transform = 'rotate(' + angle + 'deg)';
+    }
+  }
+
+  /* countdown ring */
+  /* cycle_seconds is the true length of THIS cycle (jitter makes it differ
+     from interval_minutes), so the ring and ticks scale against it. */
+  const ring = $('ring');
+  const total = s.cycle_seconds || (s.interval_minutes || 30) * 60;
+  const remain = s.next_rotation_in;
+  if (s.rotating && remain !== null && remain !== undefined){
+    ring.classList.remove('idle');
+    /* snap (no tween) when the timer resets upward after a click */
+    if (lastRemain !== null && remain > lastRemain){
+      ring.classList.add('snap');
+      requestAnimationFrame(() => requestAnimationFrame(
+        () => ring.classList.remove('snap')));
+    }
+    const frac = Math.max(0, Math.min(1, remain / total));
+    ring.style.strokeDashoffset = CIRC * (1 - frac);
+    paintTicks(remain, total, true);
+    $('ringlabel').innerHTML = 'NEXT <b>' + fmt(remain) + '</b>'
+      + (s.jitter ? ' <span style="color:var(--amber)">~</span>' : '');
+    lastRemain = remain;
+  } else {
+    ring.classList.add('idle','snap');
+    ring.style.strokeDashoffset = 0;
+    paintTicks(null, total, false);
+    requestAnimationFrame(() => ring.classList.remove('snap'));
+    $('ringlabel').textContent = s.busy ? 'CYCLING' : 'STANDBY';
+    lastRemain = null;
+  }
+
+  /* controls */
+  const t = $('toggle');
+  t.textContent = s.rotating ? 'Stop rotation' : 'Start rotation';
+  t.className = s.rotating ? 'live' : 'gh';
+  $('rotate').disabled = s.busy;
+  $('disc').disabled = s.busy;
+
+  /* feed (newest first, already ordered by the backend) */
+  $('feed').innerHTML = (s.log || []).map(e =>
+    '<div><span class="t">' + esc(e.ts) + '</span>'
+    + '<span class="m ' + (e.kind || '') + '">' + esc(e.msg) + '</span></div>').join('');
+}
+
+async function tick(){
+  try{
+    const r = await fetch('/api/status', {cache:'no-store'});
+    render(await r.json());
+  }catch(e){}
+}
+
+/* ---- controls: same endpoints and payloads as before ---- */
+$('toggle').onclick = async () => {
+  const iv = parseInt($('iv').value, 10) || 30;
+  await post('/api/rotation', rotating ? {on:false} : {on:true, interval:iv});
+  tick();
+};
+$('rotate').onclick  = async () => { $('rotate').disabled = true;
+                                     await post('/api/rotate'); tick(); };
+$('checkip').onclick = async () => { $('checkip').disabled = true;
+                                     await post('/api/checkip');
+                                     $('checkip').disabled = false; tick(); };
+$('disc').onclick    = async () => { $('disc').disabled = true;
+                                     await post('/api/disconnect'); tick(); };
+$('iv').onchange     = async () => {
+  const v = parseInt($('iv').value, 10);
+  if (v >= 1 && v <= 1440){ await post('/api/interval', {interval:v}); tick(); }
+};
+
+/* ------------------------------------------------------------------ *
+ * DEFENCE TOGGLES
+ * Each entry declares how its state is READ BACK from the system. A switch
+ * shows "on" only when the system says so; where the truth needs root to read
+ * (ufw / nftables) it shows UNKNOWN rather than echoing the last click.
+ * ------------------------------------------------------------------ */
+const TOGGLES = [
+  { id:'killswitch', name:'Kill-switch enforce', local:true,
+    desc:'Proton native kill switch — blocks traffic if the tunnel drops. Applied through the VPN API (the daemon holds the privilege), no sudo needed.',
+    read:(d,st) => st.killswitch === 'On' || st.killswitch === 'Permanent',
+    label:(d,st) => (st.killswitch || '—').toUpperCase(),
+    set:async on => post('/api/killswitch', {mode: on ? 1 : 0}) },
+
+  { id:'ks_enforce_nft', name:'Kill-switch enforce (nft)', sudo:true,
+    desc:'Interface-bound egress lock: drop all output not leaving the tunnel. Independent of Proton. The rule is bound to the tunnel device that is actually up — with no tunnel, arming it would cut off all networking, so the command says so instead.',
+    /* Real state now: read back from the live ruleset when the allowlist is
+       installed, still null (unknown) when it is not. */
+    read:d => (d && d.ks_enforce_armed === undefined) ? null : d.ks_enforce_armed,
+    label:d => (d.tools && !d.tools.nft) ? 'NFT NOT INSTALLED'
+            : d.ks_enforce_armed === true ? 'ARMED · ' + (d.ifaces ? d.ifaces.tunnel : '')
+            : !d.sudo_ready ? (d.ifaces && d.ifaces.tunnel ? 'NEEDS SUDO · ' + d.ifaces.tunnel
+                                                           : 'NO TUNNEL UP')
+            : (d.ifaces && d.ifaces.tunnel ? 'OFF · ' + d.ifaces.tunnel : 'NO TUNNEL UP'),
+    bad:d => !!(d.ifaces && !d.ifaces.tunnel) },
+
+  { id:'force_dns', name:'Force tunnel DNS',
+    desc:'Reports whether DNS follows the tunnel. This is a system setting, not a panel action: NetworkManager owns /etc/resolv.conf, so the panel shows the exact fix rather than writing the file (a write would be reverted on the next connection change). Leak state is compared live: /etc/resolv.conf vs the DNS the tunnel advertises.',
+    sudo:true,
+    /* leaking === null means no tunnel is up, so there is nothing to compare
+       against — report unknown rather than a reassuring "not leaking". */
+    read:d => (!d.dns || d.dns.leaking === null) ? null : !d.dns.leaking,
+    label:d => !d.dns ? '—'
+            : d.dns.leaking === null
+              ? 'NO TUNNEL — CANNOT VERIFY'
+              : d.dns.blackholed
+                ? 'FAIL-CLOSED (0.0.0.0)'
+                : (d.dns.leaking
+                   ? 'LEAKING → ' + (d.dns.resolvers || []).join(' ')
+                   : 'TUNNEL DNS ' + (d.dns.resolvers || []).join(' ')),
+    bad:d => !!(d.dns && d.dns.leaking === true) },
+
+  { id:'ipv6_os', name:'Disable IPv6', sudo:true,
+    desc:'Turn IPv6 off at the OS (sysctl) to close the v6 leak path. State is read from sysctl.',
+    read:d => d.ipv6 && d.ipv6.disabled === true,
+    label:d => !d.ipv6 || d.ipv6.disabled === null ? '—'
+                : (d.ipv6.disabled ? 'IPv6 OFF' : 'IPv6 ON') },
+
+  { id:'mac_random', name:'MAC randomize', sudo:true,
+    desc:'Randomize the NIC hardware address through the NetworkManager profile that actually owns the link (nmcli reverts a raw `ip link` change on the next activation).',
+    read:d => !!(d.mac && d.mac.randomized === true),
+    label:d => !d.mac ? '—'
+            : !d.mac.nmcli ? 'NMCLI NOT INSTALLED'
+            : !d.mac.mac ? 'NO NIC FOUND'
+            : d.mac.iface + ' ' + d.mac.mac
+              + (d.mac.randomized ? ' · RANDOM' : ' · PERMANENT') },
+
+  { id:'jitter', name:'Rotation jitter', local:true,
+    desc:'Randomize each cycle ±35% instead of a fixed period, so the rotation cadence is not fingerprintable.',
+    read:d => !!d.toggles.jitter, label:d => d.toggles.jitter ? 'ARMED' : 'FIXED' },
+
+  { id:'auto_rotate_trigger', name:'Auto-rotate on trigger', local:true,
+    desc:'Fire a rotation automatically on either trigger: a new non-loopback external connection, or an exit IP that changes without a rotation of ours (tunnel drop / reconnect).',
+    read:d => !!d.toggles.auto_rotate_trigger,
+    label:d => !d.toggles.auto_rotate_trigger ? 'OFF'
+            : 'ARMED · WATCHING ' + (d.exit_ip_seen || 'exit ip pending') },
+
+  { id:'portscan', name:'Port-scan detect + drop at host', sudo:true,
+    desc:'nftables SYN rate-limit + log, dropping at THIS HOST. Packets still arrive at the machine and are dropped by its own kernel — this does NOT stop them before they reach you; upstream blocking is the router/ISP\u2019s job. Hits are read back from the kernel journal.',
+    /* The ruleset needs root to list, but a logged hit PROVES the rule is
+       loaded. No hits proves nothing either way, so that stays unknown. */
+    read:d => (d.portscan && d.portscan.armed === true) ? true : null,
+    label:d => !d.portscan ? '—'
+            : !d.portscan.nft_installed ? 'NFT NOT INSTALLED'
+            : d.portscan.armed === true
+              ? 'ARMED · ' + (d.portscan.scan ? d.portscan.scan.count : 0) + ' HITS'
+              : (d.portscan.scan && d.portscan.scan.readable
+                 ? 'UNCONFIRMED — NO HITS LOGGED'
+                 : 'NEEDS SUDO — LOG UNREADABLE'),
+    bad:d => !!(d.portscan && d.portscan.scan && d.portscan.scan.count > 0) },
+
+  { id:'arp_watch', name:'ARP watch', local:true,
+    desc:'Alert if the default gateway MAC changes while its IP stays the same (ARP spoof / hostile wifi).',
+    read:d => !!d.toggles.arp_watch,
+    label:d => d.gateway && d.gateway.mac ? d.gateway.mac : 'OFF' },
+
+  { id:'capture_detect', name:'Screen-capture DETECTOR', local:true,
+    desc:'Detects screen-capture processes (x11grab, OBS, recorders). DETECTION ONLY — on X11 nothing in userspace can block capture.',
+    read:d => !!d.toggles.capture_detect,
+    label:d => (d.capture && d.capture.length) ? d.capture.length + ' ACTIVE'
+              : (d.toggles.capture_detect ? 'WATCHING' : 'OFF'),
+    bad:d => d.capture && d.capture.length > 0 },
+
+  { id:'notifications', name:'Desktop notifications', local:true,
+    desc:'Raise a desktop notification on any flagged alert (notify-send).',
+    read:d => !!d.toggles.notifications,
+    label:d => d.notify_available ? (d.toggles.notifications ? 'ON' : 'OFF')
+                                  : 'NOTIFY-SEND NOT INSTALLED',
+    bad:d => !d.notify_available },
+
+  { id:'lockdown', name:'Lockdown (deny incoming)', sudo:true,
+    desc:'ufw default deny incoming / allow outgoing. State cannot be read without root, so it is reported as unknown.',
+    read:d => d.firewall && d.firewall.readable
+              ? (d.firewall.active && d.firewall.default_incoming === 'deny') : null,
+    label:d => !d.firewall ? '—'
+            : (!d.firewall.ufw_installed ? 'UFW NOT INSTALLED'
+               : (d.firewall.readable ? (d.firewall.active ? 'ACTIVE' : 'INACTIVE')
+                                      : 'UNKNOWN — NEEDS SUDO')) },
+
+  { id:'auto_lockdown_lock', name:'Auto-lockdown on lock', local:true,
+    desc:'When the screen locks, apply the deny-incoming lockdown. Lock detection is real; applying the rule still needs root, so the command is surfaced.',
+    read:d => !!d.toggles.auto_lockdown_lock,
+    label:d => d.locked === null ? 'LOCK STATE UNKNOWN'
+              : (d.locked ? 'SCREEN LOCKED' : 'SCREEN UNLOCKED') },
+];
+
+let DEF = null;
+
+function renderToggles(d, st){
+  DEF = d;
+  const g = $('tgrid');
+  if (!g.dataset.built){
+    g.innerHTML = TOGGLES.map(t => `
+      <div class="tog ${t.sudo ? 'sudo' : ''}" id="tog-${t.id}">
+        <div class="tog-top">
+          <div class="tog-name">${t.name}</div>
+          <div class="sw" data-id="${t.id}"></div>
+        </div>
+        <div class="tog-desc">${t.desc}</div>
+        <div class="tog-state" id="ts-${t.id}">—</div>
+        <div class="cmdbox" id="cmd-${t.id}"></div>
+      </div>`).join('');
+    g.dataset.built = '1';
+    g.querySelectorAll('.sw').forEach(el => {
+      el.onclick = () => flip(el.dataset.id);
+    });
+  }
+  TOGGLES.forEach(t => {
+    let state = null;
+    try { state = t.read(d, st); } catch(e) { state = null; }
+    const sw = g.querySelector(`.sw[data-id="${t.id}"]`);
+    const box = $('tog-' + t.id), lab = $('ts-' + t.id);
+    sw.classList.toggle('on', state === true);
+    sw.classList.toggle('unk', state === null);
+    box.classList.toggle('on', state === true);
+    box.classList.toggle('unknown', state === null && !t.sudo);
+    let txt = '—';
+    try { txt = t.label(d, st) || '—'; } catch(e) {}
+    lab.textContent = txt;
+    const isBad = t.bad ? t.bad(d) : false;
+    lab.className = 'tog-state ' + (isBad ? 'bad'
+      : state === true ? 'ok' : state === null ? 'unk' : 'off');
+  });
+}
+
+async function flip(id){
+  const t = TOGGLES.find(x => x.id === id);
+  if (!t) return;
+  let cur = null;
+  try { cur = t.read(DEF, LASTSTATUS || {}); } catch(e){}
+  const want = !(cur === true);
+
+  let r;
+  if (t.set) r = await t.set(want);
+  else r = await post('/api/toggle', {name: id, on: want});
+
+  const box = $('cmd-' + id);
+  if (r && r.needs_sudo && r.command){
+    /* Never silently fail and never embed a password: show the exact command. */
+    box.innerHTML = '<span class="h">' + esc(r.msg || 'Run this yourself:')
+                  + '</span>' + esc(r.command);
+    box.classList.add('show');
+  } else if (r && r.applied) {
+    box.classList.remove('show');
+  }
+  refreshDefence();
+  tick();
+}
+
+async function refreshDefence(){
+  try{
+    const r = await fetch('/api/defence', {cache:'no-store'});
+    const d = await r.json();
+    renderToggles(d, LASTSTATUS || {});
+    renderMonitors(d);
+  }catch(e){}
+}
+
+function renderMonitors(d){
+  /* listening ports: wildcard/public first, flagged magenta */
+  const L = (d.listening || []);
+  $('listening').innerHTML = L.length ? L.slice(0, 60).map(x => {
+    const exposed = x.wildcard || (x.public && !x.addr.startsWith('192.168.'));
+    return `<div class="r ${exposed ? 'flag' : ''}">`
+      + `<span>${esc(x.proto)}/${esc(x.port)}</span>`
+      + `<span>${esc(x.addr || '*')}</span>`
+      + `<span class="p">${esc(x.proc || '')}</span></div>`;
+  }).join('') : '<span class="empty">none</span>';
+
+  const C = (d.connections || []);
+  $('conns').innerHTML = C.length ? C.slice(0, 60).map(x =>
+    `<div class="r ${x.local ? '' : 'flag'}">`
+    + `<span>${esc(x.remote)}:${esc(x.rport)}</span>`
+    + `<span class="p">${esc(x.proc || '')}</span></div>`).join('')
+    : '<span class="empty">no active TCP connections</span>';
+
+  const A = (d.alerts || []);
+  $('alerts').innerHTML = A.length ? A.map(a =>
+    `<div class="r"><span>${esc(a.ts)}</span>`
+    + `<span class="${a.kind === 'err' ? 'flag' : ''}" style="white-space:normal;color:${
+        a.kind === 'err' ? 'var(--magenta)' : a.kind === 'ok' ? 'var(--cyan)' : 'var(--amber)'
+      }">${esc(a.msg)}</span></div>`).join('')
+    : '<span class="empty">no alerts</span>';
+
+  /* tooling: name anything missing outright rather than letting a control
+     fail quietly when it is clicked */
+  const T = d.tools || {};
+  $('toolstrip').innerHTML = Object.keys(T).length
+    ? '<span class="hd">tooling</span>' + Object.keys(T).map(k =>
+        `<span class="tl ${T[k] ? '' : 'no'}">${esc(k)} ${T[k] ? '&check;' : '&times; missing'}</span>`
+      ).join('')
+    : '';
+
+  /* port-scan hits read back from the kernel journal */
+  const sc = d.scan || {};
+  const ev = sc.events || [];
+  if (!sc.readable){
+    $('scanrows').innerHTML = '<span class="empty">'
+      + esc(sc.reason || 'kernel log not polled yet') + '</span>';
+  } else if (!ev.length){
+    $('scanrows').innerHTML = '<span class="empty">no scan hits logged</span>';
+  } else {
+    $('scanrows').innerHTML = ev.slice().reverse().map(e =>
+      `<div class="r flag"><span>${esc(e.ts)}</span>`
+      + `<span>${esc(e.src)}</span>`
+      + `<span class="p">&rarr; port ${esc(e.dport)} ${esc(e.proto)}</span></div>`).join('');
+  }
+  const ps = d.portscan || {};
+  const backlog = ps.syn_backlog;
+  $('scannote').innerHTML =
+    `<div class="warnnote">Half-open sockets (SYN-RECV): <b>${
+       backlog === null || backlog === undefined ? 'unknown' : backlog}</b>.
+     These hits are packets that <b>already reached this machine</b> and were
+     dropped by its own kernel — this is host-level detection and dropping, not
+     upstream blocking. Stopping traffic before it arrives is the
+     <b>router/ISP\u2019s</b> job.</div>`;
+
+  /* capture: honest note about what this can and cannot do */
+  const cap = d.capture || [];
+  $('capnote').innerHTML = cap.length
+    ? `<div class="warnnote" style="border-color:var(--magenta);color:#ffb9d0;
+         background:rgba(255,45,120,.08)"><b>SCREEN CAPTURE DETECTED:</b> `
+      + cap.map(c => esc(c.comm) + ' (pid ' + esc(c.pid) + ')').join(', ')
+      + `. This panel <b>detects</b> capture — it cannot block it. On an X11
+         session any client can read the screen; the real mitigation is a
+         Wayland session.</div>`
+    : (d.session_type === 'x11'
+        ? `<div class="warnnote">Session is <b>X11</b>: any process can read the
+           screen, so capture can be <b>detected but not blocked</b>. For real
+           mitigation, log into a <b>Wayland</b> session.</div>`
+        : '');
+}
+
+let LASTSTATUS = null;
+
+/* First load: the backend only learns the exit IP when asked, so if it has
+   none yet, request one through the same endpoint the button uses. */
+let ipPrimed = false;
+async function boot(){
+  await tick();
+  if (!ipPrimed){
+    ipPrimed = true;
+    const r = await fetch('/api/status', {cache:'no-store'}).then(x => x.json())
+                    .catch(() => null);
+    if (r && r.logged_in && !r.public_ip && !r.busy){
+      await post('/api/checkip');
+      tick();
+    }
+  }
+}
+boot();
+refreshDefence();
+setInterval(tick, 2000);
+setInterval(refreshDefence, 5000);
+</script>
+</body>
+</html>

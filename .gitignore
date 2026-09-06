@@ -1,0 +1,53 @@
+# ---- VPN configs & credentials: NEVER commit ----
+*.ovpn
+*.conf
+!templates/*.conf
+wg*.conf
+*wireguard*
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+resolv.conf
+*.auth
+proton*.auth
+vpnbook.auth
+
+# ---- secrets / env ----
+.env
+*.env
+.env.*
+*secret*
+*credential*
+*cred*.json
+*token*
+*password*
+*.token
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# ---- local state / logs / dbs ----
+*.log
+vpn.log
+*.db
+*.sqlite
+*.sqlite3
+*.pid
+
+# ---- editor / os ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
