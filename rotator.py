@@ -21,6 +21,14 @@ KILLSWITCH_LABELS = {0: "Off", 1: "On", 2: "Permanent"}
 DISCONNECT_TIMEOUT = 45
 CONNECT_TIMEOUT = 60
 
+# Bounds the raw `await c.disconnect()` / `await c.connect()` calls themselves,
+# not the DISCONNECT_TIMEOUT/CONNECT_TIMEOUT polling phases above (those only
+# start once the await has already returned). Observed cause: those awaits can
+# hang indefinitely -- no exception, no timeout -- when the official ProtonVPN
+# desktop app is also running and already holds the tunnel; Revolver's attempt
+# to take it over then blocks on the vendor API with nothing to bound it.
+TEARDOWN_RECONNECT_TIMEOUT = 25
+
 
 class Rotator:
     def __init__(self, interval_minutes=30):
@@ -221,6 +229,35 @@ class Rotator:
         pool = sorted(cands, key=lambda s: s.load)[:20]
         return random.choice(pool)
 
+    async def _teardown_and_reconnect(self, c, target):
+        """Disconnect fully, then connect to a fresh server.
+
+        Split out from `_rotate()` only so the raw disconnect/connect awaits
+        can be bounded as a single unit by `asyncio.wait_for` -- see
+        TEARDOWN_RECONNECT_TIMEOUT above for why that bound exists.
+        """
+        # Full teardown first: the API raises ConcurrentConnectionsError
+        # if a new connection is started while one is still active.
+        if c.is_connected or c.is_connection_active:
+            old = await self._server_name_for(c.current_server_id) or "current"
+            self.event(f"Disconnecting from {old}...")
+            await c.disconnect()
+            if not await self._wait_until(
+                lambda: not c.is_connected and not c.is_connection_active,
+                DISCONNECT_TIMEOUT, "disconnect",
+            ):
+                return False
+            self.event("Disconnected", "ok")
+
+        self.event(f"Connecting to {target.name} (load {target.load}%)...")
+        vpn_server = c.get_vpn_server(target, self._api.client_config)
+        await c.connect(vpn_server, protocol="wireguard")
+        if not await self._wait_until(lambda: c.is_connected,
+                                      CONNECT_TIMEOUT, "connect"):
+            self.event(f"Connect to {target.name} failed", "err")
+            return False
+        return True
+
     async def _rotate(self):
         """Disconnect fully, then connect to a fresh server."""
         if self._conn_lock.locked():
@@ -235,25 +272,18 @@ class Rotator:
                     self.event("No eligible servers found", "err")
                     return False
 
-                # Full teardown first: the API raises ConcurrentConnectionsError
-                # if a new connection is started while one is still active.
-                if c.is_connected or c.is_connection_active:
-                    old = await self._server_name_for(c.current_server_id) or "current"
-                    self.event(f"Disconnecting from {old}...")
-                    await c.disconnect()
-                    if not await self._wait_until(
-                        lambda: not c.is_connected and not c.is_connection_active,
-                        DISCONNECT_TIMEOUT, "disconnect",
-                    ):
-                        return False
-                    self.event("Disconnected", "ok")
-
-                self.event(f"Connecting to {target.name} (load {target.load}%)...")
-                vpn_server = c.get_vpn_server(target, self._api.client_config)
-                await c.connect(vpn_server, protocol="wireguard")
-                if not await self._wait_until(lambda: c.is_connected,
-                                              CONNECT_TIMEOUT, "connect"):
-                    self.event(f"Connect to {target.name} failed", "err")
+                try:
+                    ok = await asyncio.wait_for(
+                        self._teardown_and_reconnect(c, target),
+                        timeout=TEARDOWN_RECONNECT_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    self.event(
+                        "Timed out taking over the VPN connection -- is the "
+                        "ProtonVPN desktop app still open? Close it and try "
+                        "again.", "err")
+                    return False
+                if not ok:
                     return False
 
                 self.rotation_count += 1
